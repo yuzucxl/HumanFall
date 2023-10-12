@@ -4,6 +4,7 @@ import sys
 #import qimage2ndarray
 
 import cv2
+import pygame
 from PyQt5 import QtWidgets, QtCore, QtGui
 from PyQt5.QtGui import *
 from PyQt5.QtWidgets import *
@@ -26,7 +27,9 @@ from PoseEstimateLoader import SPPE_FastPose
 from fn import draw_single
 from Track.Tracker import Detection, Tracker
 from ActionsEstLoader import TSSTG
-
+import urllib
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 source = 'rtsp://admin:q123456789@192.168.1.200/Streaming/Channels/101'
 
 class myMainWindow(QMainWindow,Ui_MainWindow,QWidget):
@@ -77,10 +80,29 @@ class myMainWindow(QMainWindow,Ui_MainWindow,QWidget):
         self.alphapose.clicked.connect(self.Pose_model)
         self.stgcn.clicked.connect(self.Actions_Estimate)
 
+        self.statusStr = {
+            '0': '短信发送成功',
+            '-1': '参数不全',
+            '-2': '服务器空间不支持,请确认支持curl或者fsocket,联系您的空间商解决或者更换空间',
+            '30': '密码错误',
+            '40': '账号不存在',
+            '41': '余额不足',
+            '42': '账户已过期',
+            '43': 'IP地址限制',
+            '50': '内容含有敏感词'
+        }
 
+        self.phone_number = None
 
+        self.pool = ThreadPoolExecutor(max_workers=10)
 
+        self.min_alert_interval = 5  # 最小报警间隔
+        self.last_alert_time = 0  # 全局变量,保存上次报警时间
+        self.fall_start_time = None  # 跌倒开始时间
+        self.fall_duration_threshold = 2.5  # 跌倒持续时间，要是一直跌倒，还没躺下，说明不是跌倒
+        self.lying_down_start_time = None
 
+        self.current_thread = None
         '''=============================参数初始化============================='''
         self.flag = False
         self.cam = None
@@ -136,6 +158,39 @@ class myMainWindow(QMainWindow,Ui_MainWindow,QWidget):
         engine.runAndWait()
             # time.sleep(1)
 
+    '''=============================短信生成==============================='''
+
+    def md5(self, str):
+        import hashlib
+        m = hashlib.md5()
+        m.update(str.encode("utf8"))
+        return m.hexdigest()
+
+
+    def generate_sms_url(self, phone, content):
+        smsapi = "http://api.smsbao.com/"
+        user = '13036156947'
+        password = self.md5('lx123456')
+        data = urllib.parse.urlencode({'u': user, 'p': password, 'm': phone, 'c': content})
+        send_url = smsapi + 'sms?' + data
+        return send_url
+
+
+    '''===================语音报警======================'''
+
+
+    def warning(self):
+
+        pygame.init()
+        sound = pygame.mixer.Sound("发现跌倒.wav")
+        sound.play()
+        pygame.time.delay(2000)  # 以毫秒为单位，此处播放2秒钟
+        if self.phone_number:
+            response = urllib.request.urlopen(self.generate_sms_url(self.phone_number, '发现跌倒'))
+            the_page = response.read().decode('utf-8')
+            print(self.statusStr[the_page])
+
+    '''============================================='''
     '''=============================PyQt部分函数============================='''
     def openVideoFile(self):
         if self.timer_VideoFile.isActive() == False:
@@ -300,14 +355,37 @@ class myMainWindow(QMainWindow,Ui_MainWindow,QWidget):
                     action_name = self.action_model.class_names[out[0].argmax()]
                     action = '{}: {:.2f}%'.format(action_name, out[0].max() * 100)
                     if action_name == 'Fall Down':
-                        if self.Warning_tag:
-                            Warning.start()
-                            self.Warning_tag = False
-                        clr = (255, 0, 0)
+                        self.fall_start_time = time.time()
+                        # clr = (255, 0, 0)  # 将字体颜色设置为红色
+
                     elif action_name == 'Lying Down':
-                        clr = (255, 200, 0)
-                    else:
-                        self.Warning_tag = True
+                        if self.fall_start_time:
+                            if time.time() - self.fall_start_time <= self.fall_duration_threshold:
+                                # 确认为真实跌倒
+                                # print('Real fall detected')
+                                clr = (255, 0, 0)  # 将字体颜色设置为红色
+                                if time.time() - self.last_alert_time >= self.min_alert_interval:
+                                    print('======Find human fall======')
+                                    # if current_thread is None or not current_thread.is_alive():
+                                    #     current_thread = threading.Thread(target=warning)
+                                    #     current_thread.start()
+                                    self.pool.submit(self.warning)
+                                    # if self.current_thread is None or not self.current_thread.is_alive():
+                                    #     current_thread = threading.Thread(target=self.warning)
+                                    #     current_thread.start()
+                                    # 更新last_alert_time
+                                    self.last_alert_time = time.time()
+                                # other alert actions
+
+                    # if action_name == 'Fall Down':
+                    #     if self.Warning_tag:
+                    #         Warning.start()
+                    #         self.Warning_tag = False
+                    #     clr = (255, 0, 0)
+                    # elif action_name == 'Lying Down':
+                    #     clr = (255, 200, 0)
+                    # else:
+                    #     self.Warning_tag = True
 
 
                 # VISUALIZE.
@@ -369,6 +447,13 @@ class myMainWindow(QMainWindow,Ui_MainWindow,QWidget):
         showImage = QtGui.QImage(show.data, show.shape[1], show.shape[0], 3 * show.shape[1], QtGui.QImage.Format_RGB888)
         return showImage
 
+    def closeEvent(self, event):
+        # 在窗口关闭时关闭线程池
+        self.pool.shutdown(wait=True)
+        event.accept()
+
+
+
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     splash = QSplashScreen(QPixmap(".\\data_img\\source_image\\logo.png"))
@@ -376,6 +461,7 @@ if __name__ == '__main__':
     splash.show()     # 显示画面
     # 显示信息
     mainWindow = myMainWindow()
+    # mainWindow.closed.connect(mainWindow.closePool)
     splash.showMessage(f"程序初始化中... 0%", QtCore.Qt.AlignLeft | QtCore.Qt.AlignBottom, QtCore.Qt.black)
     # mainWindow.Detection_model()
     splash.showMessage(f"程序初始化中... 20%", QtCore.Qt.AlignLeft | QtCore.Qt.AlignBottom, QtCore.Qt.black)
