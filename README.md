@@ -1,4 +1,6 @@
-# HumanFall
+
+# HumanFall v1.02
+```shell
 # Models1文件夹下的目录，权重文件路径
 ├── sppe
 │   ├── fast_res50_256x192.pth
@@ -15,3 +17,4 @@
     ├── _.txt
     ├── st_gcn.ntu-xsub.pt
     └── ntu_cs_agcn_joint-49-8350.pt
+```
